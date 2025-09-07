@@ -1,0 +1,187 @@
+{
+  "name": "Agentic SRE Triage (RAG)",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "log-intake",
+        "options": {
+          "response": "default"
+        }
+      },
+      "name": "Webhook (Production)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const log = items[0].json;\nreturn [{ json: { log } }];"
+      },
+      "name": "Normalize Log",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        420,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://<TRIAGE_API_URL>/triage",
+        "options": {
+          "timeout": 30
+        },
+        "jsonParameters": true,
+        "optionsUi": {
+          "bodyContentType": "json"
+        },
+        "sendBody": true,
+        "bodyParametersJson": "={\"log\": {{$json[\"log\"]}}}"
+      },
+      "name": "LangChain Triage (RAG)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"priority\"]}}",
+              "operation": "notEqual",
+              "value2": "P5"
+            }
+          ]
+        }
+      },
+      "name": "IF Not P5",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://<DIAG_API_URL>/healthcheck",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "url",
+              "value": "https://<YOUR_SERVICE_HEALTH_URL>"
+            }
+          ]
+        }
+      },
+      "name": "Diagnostics (healthcheck)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1140,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "none",
+        "channel": "<SLACK_CHANNEL>",
+        "text": "=*{{$json[\"service\"]}}* \u2014 {{$json[\"priority\"]}}\nProbable cause: {{$json[\"probable_cause\"]}}\nRunbook: {{$json[\"runbook\"]}}\nCommands: {{$json[\"suggest_cmds\"]}}",
+        "otherOptions": {}
+      },
+      "name": "Slack Notify",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [
+        1380,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://<TRIAGE_API_URL>/feedback",
+        "jsonParameters": true,
+        "sendBody": true,
+        "bodyParametersJson": "={\n  \"text\": {{$json[\"probable_cause\"] || $json[\"service\"]}},\n  \"service\": {{$json[\"service\"]}},\n  \"root_cause\": {{$json[\"probable_cause\"]}},\n  \"fix\": {{$json[\"runbook\"]}},\n  \"runbook_url\": \"https://wiki/runbooks/${{$json[\"service\"]}}\",\n  \"tags\": [{{$json[\"severity\"] || '\"ERROR\"'}}, {{$json[\"priority\"] || '\"P3\"'}}],\n  \"source\": \"n8n-feedback\"\n}"
+      },
+      "name": "Feedback -> KB (optional)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1380,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook (Production)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Log": {
+      "main": [
+        [
+          {
+            "node": "LangChain Triage (RAG)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LangChain Triage (RAG)": {
+      "main": [
+        [
+          {
+            "node": "IF Not P5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Not P5": {
+      "main": [
+        [
+          {
+            "node": "Diagnostics (healthcheck)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Feedback -> KB (optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Diagnostics (healthcheck)": {
+      "main": [
+        [
+          {
+            "node": "Slack Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
