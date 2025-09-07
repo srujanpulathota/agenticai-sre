@@ -2,16 +2,15 @@ fastapi==0.115.2
 uvicorn==0.30.6
 pydantic==2.9.2
 
-# Keep LangChain on the 0.2.x line
+# Keep LC on 0.2.x; make openai adapter match core
 langchain==0.2.16
 langchain-community==0.2.16
-# Match the same core line by using <0.2 here
 langchain-openai>=0.1,<0.2
 
 chromadb==0.5.12
 python-dotenv==1.0.1
 
-# If using PGVector later (fine to keep installed)
+# If using PGVector later (ok to keep)
 psycopg[binary]==3.2.1
 pgvector==0.3.3
 

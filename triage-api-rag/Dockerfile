@@ -1,7 +1,6 @@
-# Python slim base
 FROM python:3.11-slim
 
-# Reduce noise & ensure deterministic logs
+# Faster, cleaner Python & pip
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -9,25 +8,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# (1) System deps often needed by common Python wheels; safe + small
+# System deps (psycopg binaries still benefit from libpq)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential curl libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+      libpq5 curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# (2) Leverage Docker layer cache for deps
+# Install deps first for better caching
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip check
 
-# (3) Copy the rest of your app
+# Copy the app
 COPY . .
 
-# (4) Run as a non-root user
+# Run as non-root
 RUN useradd --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 
-# (5) Expose & run (PORT is honored if provided)
-ENV PORT=8080
+# Cloud Run injects PORT; just expose for local clarity
 EXPOSE 8080
+
+# IMPORTANT: bind to $PORT provided by Cloud Run
 CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
