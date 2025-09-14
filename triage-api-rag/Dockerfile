@@ -1,3 +1,4 @@
+# ── Base ────────────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
 # Faster, cleaner Python & pip
@@ -6,28 +7,36 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
+# Defaults that help in Cloud Run / Chroma demos
+# (You can override these in Cloud Run → Variables)
+ENV CHROMA_PERSIST_DIR=/tmp/chroma \
+    ANONYMIZED_TELEMETRY=false
+
 WORKDIR /app
 
-# System deps (psycopg binaries still benefit from libpq)
+# ── System deps (minimal; psycopg[binary] works without build tools) ────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5 curl && \
+      libpq5 curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Install deps first for better caching
+# ── Python deps first (better layer cache) ──────────────────────────────────────
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
+RUN pip install --upgrade pip setuptools wheel pip-tools && \
     pip install --no-cache-dir -r requirements.txt && \
     pip check
 
-# Copy the app
+# ── App code ────────────────────────────────────────────────────────────────────
 COPY . .
 
-# Run as non-root
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+# Non-root user
+RUN useradd --create-home appuser && \
+    mkdir -p ${CHROMA_PERSIST_DIR} && \
+    chown -R appuser:appuser /app ${CHROMA_PERSIST_DIR}
 USER appuser
 
-# Cloud Run injects PORT; just expose for local clarity
+# Cloud Run injects $PORT; expose for local clarity
 EXPOSE 8080
 
+# ── Entrypoint ─────────────────────────────────────────────────────────────────
 # IMPORTANT: bind to $PORT provided by Cloud Run
 CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
