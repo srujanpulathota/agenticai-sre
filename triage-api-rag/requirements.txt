@@ -1,14 +1,12 @@
-# your existing web & utils
 fastapi==0.115.2
 uvicorn==0.30.6
 pydantic==2.9.2
 python-dotenv==1.0.1
 
 # LangChain stack (mutually compatible)
-langchain==0.3.6
-langchain-community==0.3.6
-langchain-openai==0.2.7
-# langchain-core will resolve to 0.3.x automatically
+langchain==0.3.10
+langchain-community==0.3.10
+langchain-openai==0.2.7   # requires langchain-core >=0.3.16 (pulled in by langchain)
 
 # Vector store
 chromadb==0.5.12
@@ -17,6 +15,6 @@ chromadb==0.5.12
 psycopg[binary]==3.2.1
 pgvector==0.3.3
 
-# OpenAI + explicit http client
+# OpenAI + explicit HTTP client for our agent.py
 openai==1.51.0
 httpx==0.27.2
