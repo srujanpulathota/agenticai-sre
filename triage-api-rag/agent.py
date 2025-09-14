@@ -1,60 +1,70 @@
 import os, json, hashlib
 from typing import Dict, Any, Optional
 
+import httpx
+from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 from schemas import TriageDecision
 
-# --- Config from env ---
+# ----------------- Config from environment -----------------
 MODEL = os.getenv("MODEL", "gpt-4o-mini")
 BACKEND = os.getenv("RAG_BACKEND", "chroma").lower()
 
+# OpenAI creds & options
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_BASE = os.getenv("OPENAI_BASE")              # e.g., https://api.fireworks.ai/inference/v1
+OPENAI_BASE = os.getenv("OPENAI_BASE")  # leave unset for official OpenAI; else e.g. https://api.openai.com/v1
 OPENAI_ORG_ID = os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION")
-OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")        # used by newer OpenAI "project keys" (sk-proj-...)
+OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")  # needed for sk-proj-* keys
 
-# --- RAG retriever selection ---
+# ----------------- RAG backend selector -----------------
 if BACKEND == "pgvector":
-    from rag_store_pg import retrieve_similar
+    from rag_store_pg import retrieve_similar  # type: ignore
 else:
-    from rag_store_chroma import retrieve_similar
+    from rag_store_chroma import retrieve_similar  # type: ignore
 
-# --- Lazy LLM init (so the server starts even if envs are missing) ---
+# ----------------- Lazy LLM init -----------------
 _LLM: Optional[ChatOpenAI] = None
 
 
 def _get_llm() -> ChatOpenAI:
+    """
+    Build a ChatOpenAI bound to an explicit OpenAI client that uses a proxy-free httpx Client.
+    This avoids the 'proxies' kwarg incompatibility between langchain-openai and openai versions.
+    """
     global _LLM
     if _LLM is not None:
         return _LLM
 
     if not OPENAI_API_KEY:
-        # Keep message explicit — helps users diagnose missing secret mapping.
-        raise ValueError(
-            "Please provide an OpenAI API key via env var OPENAI_API_KEY."
-        )
+        # Be explicit to aid ops when the secret/env is missing
+        raise ValueError("Please provide an OpenAI API key via env var OPENAI_API_KEY.")
 
-    client_kwargs = {}
+    # Proxy-free HTTP client (prevents unsupported 'proxies' kwarg paths)
+    http_client = httpx.Client(proxies=None, timeout=None)
+
+    oa_kwargs = {"api_key": OPENAI_API_KEY, "http_client": http_client}
     if OPENAI_BASE:
-        client_kwargs["base_url"] = OPENAI_BASE
+        oa_kwargs["base_url"] = OPENAI_BASE
     if OPENAI_ORG_ID:
-        client_kwargs["organization"] = OPENAI_ORG_ID
-    # NOTE: Some langchain-openai versions read OPENAI_PROJECT from the environment.
-    # Passing it as a kwarg may be unsupported; we rely on the env var.
+        oa_kwargs["organization"] = OPENAI_ORG_ID
+    if OPENAI_PROJECT:
+        oa_kwargs["project"] = OPENAI_PROJECT
+
+    oa_client = OpenAI(**oa_kwargs)
 
     _LLM = ChatOpenAI(
         model=MODEL,
         temperature=0,
-        api_key=OPENAI_API_KEY,
-        **client_kwargs,
+        client=oa_client,  # hand in the prepared OpenAI client
     )
     return _LLM
 
 
-# --- Output parsing / prompt ---
+# ----------------- Prompt & parser -----------------
 _parser = PydanticOutputParser(pydantic_object=TriageDecision)
+
 _prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -70,8 +80,9 @@ _prompt = ChatPromptTemplate.from_messages(
 ).partial(schema=_parser.get_format_instructions())
 
 
+# ----------------- Helpers -----------------
 def _stable_key(log: Dict[str, Any]) -> str:
-    # Build a deterministic key over the most stable fields
+    # Build a deterministic digest over stable log fields
     text = json.dumps(
         {k: log.get(k) for k in ("logName", "resource", "textPayload", "jsonPayload")},
         sort_keys=True,
@@ -80,24 +91,25 @@ def _stable_key(log: Dict[str, Any]) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
+# ----------------- Public API -----------------
 def triage(log: Dict[str, Any]) -> TriageDecision:
     """
     Given a single Cloud Logging-like log dict, return a structured TriageDecision.
     """
-    # Query text for RAG retrieval: prefer plain text payload, otherwise json payload, else full log
+    # Query text for retrieval: prefer textPayload, else jsonPayload, else whole log
     query = (
         log.get("textPayload")
         or json.dumps(log.get("jsonPayload", {}), ensure_ascii=False)
         or json.dumps(log, ensure_ascii=False)
     )
 
-    # Retrieve similar past cases from the chosen vector store
+    # Retrieve similar cases from the vector store
     cases = retrieve_similar(query, k=4)
 
-    # Add a stable dedupe hint if caller didn't supply one
+    # Ensure a stable dedupe hint exists
     log.setdefault("_dedupe_hint", _stable_key(log))
 
-    # Build the prompt and call the LLM
+    # Build prompt and invoke LLM
     msg = _prompt.format_messages(
         cases=json.dumps(cases, ensure_ascii=False),
         log=json.dumps(log, ensure_ascii=False),
@@ -105,5 +117,5 @@ def triage(log: Dict[str, Any]) -> TriageDecision:
     llm = _get_llm()
     out = llm.invoke(msg)
 
-    # Parse to the Pydantic model (validates schema)
+    # Validate & parse to the schema
     return _parser.parse(out.content)
