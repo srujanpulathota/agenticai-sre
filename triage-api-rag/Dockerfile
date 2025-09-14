@@ -23,7 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel pip-tools && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip check
+    pip check && \
+    pip freeze
 
 # ── App code ────────────────────────────────────────────────────────────────────
 COPY . .
