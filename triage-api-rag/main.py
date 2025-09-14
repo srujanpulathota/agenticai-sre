@@ -92,3 +92,17 @@ def feedback(payload: dict = Body(...)):  # ← force body, not query
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Feedback upsert failed: {exc}") from exc
+
+@app.get("/_diag/openai")
+def diag_openai():
+    import os
+    from langchain_openai import ChatOpenAI
+    present = bool(os.getenv("OPENAI_API_KEY"))
+    base = os.getenv("OPENAI_BASE")
+    try:
+        _ = ChatOpenAI(model=os.getenv("MODEL", "gpt-4o-mini"), temperature=0)
+        init_ok = True
+    except Exception as e:
+        init_ok = False
+    return {"OPENAI_API_KEY_present": present, "OPENAI_BASE": bool(base), "llm_init_ok": init_ok}
+
