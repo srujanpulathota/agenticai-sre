@@ -95,14 +95,29 @@ def feedback(payload: dict = Body(...)):  # ← force body, not query
 
 @app.get("/_diag/openai")
 def diag_openai():
-    import os
+    import os, socket, ssl
     from langchain_openai import ChatOpenAI
-    present = bool(os.getenv("OPENAI_API_KEY"))
-    base = os.getenv("OPENAI_BASE")
+    info = {
+        "OPENAI_API_KEY_present": bool(os.getenv("OPENAI_API_KEY")),
+        "OPENAI_BASE": os.getenv("OPENAI_BASE") or "",
+        "MODEL": os.getenv("MODEL"),
+        "OPENAI_PROJECT": os.getenv("OPENAI_PROJECT"),
+        "OPENAI_ORG_ID": os.getenv("OPENAI_ORG_ID"),
+    }
     try:
         _ = ChatOpenAI(model=os.getenv("MODEL", "gpt-4o-mini"), temperature=0)
-        init_ok = True
+        info["llm_init_ok"] = True
     except Exception as e:
-        init_ok = False
-    return {"OPENAI_API_KEY_present": present, "OPENAI_BASE": bool(base), "llm_init_ok": init_ok}
+        info["llm_init_ok"] = False
+        info["llm_init_error"] = repr(e)
+
+    host = (os.getenv("OPENAI_BASE") or "https://api.openai.com").replace("https://","").split("/")[0]
+    try:
+        sock = socket.create_connection((host, 443), timeout=3)
+        ssl.create_default_context().wrap_socket(sock, server_hostname=host).close()
+        info["egress_ok"] = True
+    except Exception as e:
+        info["egress_ok"] = False
+        info["egress_error"] = repr(e)
+    return info
 
