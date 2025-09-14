@@ -1,99 +1,83 @@
 import os
 import time
 import uuid
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body   # ← add Body
 from fastapi.responses import JSONResponse
+from typing import Any
 
-# --- Fast startup defaults / Cloud Run friendly ---
-# Ensure Chroma (if used) writes to the writable path in Cloud Run
 os.environ.setdefault("CHROMA_PERSIST_DIR", "/tmp/chroma")
 
 app = FastAPI(title="Agentic SRE Triage API (RAG)")
 
-
-# ---- Lazy import helpers (avoid heavy work at import time) ----
 _triage_fn = None
 _upsert_case_fn = None
-
 
 def _get_triage_fn():
     global _triage_fn
     if _triage_fn is None:
-        # Lazy import so the server can start listening immediately
-        from agent import triage as _triage  # noqa: WPS433
+        from agent import triage as _triage
         _triage_fn = _triage
     return _triage_fn
-
 
 def _get_upsert_case_fn():
     global _upsert_case_fn
     if _upsert_case_fn is None:
         backend = os.getenv("RAG_BACKEND", "chroma").lower()
         if backend == "pgvector":
-            from rag_store_pg import upsert_case as _upsert  # noqa: WPS433
+            from rag_store_pg import upsert_case as _upsert
         else:
-            # default to chroma
-            from rag_store_chroma import upsert_case as _upsert  # noqa: WPS433
+            from rag_store_chroma import upsert_case as _upsert
         _upsert_case_fn = _upsert
     return _upsert_case_fn
 
 
-# ---- Health / readiness ----
 @app.get("/healthz")
 def healthz():
-    # Extremely lightweight health check
     return {"status": "ok", "time": int(time.time())}
-
 
 @app.get("/_ready")
 def ready():
-    """
-    Minimal readiness check.
-    We keep it cheap—just ensure lazy imports are resolvable.
-    """
     try:
         _ = _get_triage_fn()
         _ = _get_upsert_case_fn()
         return {"ready": True}
     except Exception as exc:
-        # If something is wrong with imports/config, surface a 503
         return JSONResponse({"ready": False, "error": str(exc)}, status_code=503)
 
 
-# ---- API: types (imported lazily to avoid any heavy model init during import) ----
-# We import schema types at call-time inside handlers to keep module import cheap.
-# If your schemas are lightweight, you can safely move these to the top-level.
-from typing import Any  # noqa: E402
-
-
+# ---------- FIXED /triage ----------
 @app.post("/triage")
-def do_triage(req: Any):  # typed dynamically to avoid importing schemas at module import
+def do_triage(req: Any = Body(...)):  # ← force body, not query
     try:
-        # Import schemas here to keep module import minimal
-        from schemas import TriageRequest, TriageDecision  # noqa: WPS433
+        from schemas import TriageRequest, TriageDecision
 
-        # Pydantic validation
         if not isinstance(req, dict):
-            # FastAPI normally parses JSON into dict; still guard explicitly
             raise HTTPException(status_code=400, detail="Invalid payload")
 
-        triage_req = TriageRequest(**req)
-        triage_fn = _get_triage_fn()
-        decision = triage_fn(triage_req.log)
+        # Accept either {"log": {...}} or a raw log object
+        log = req.get("log", req)
 
-        # Validate/shape the response
-        return TriageDecision(**decision).model_dump()
+        triage_fn = _get_triage_fn()
+        decision = triage_fn(log)  # should return TriageDecision
+
+        # If it’s already a Pydantic model, dump to dict; if dict, return as-is
+        if isinstance(decision, TriageDecision):
+            return decision.model_dump()
+        elif isinstance(decision, dict):
+            return TriageDecision(**decision).model_dump()
+        else:
+            raise HTTPException(status_code=500, detail="Unexpected decision type from triage()")
     except HTTPException:
         raise
     except Exception as exc:
-        # Surface as 500 with message (avoid leaking secrets)
         raise HTTPException(status_code=500, detail=f"Triage failed: {exc}") from exc
 
 
+# ---------- (small hardening) /feedback ----------
 @app.post("/feedback")
-def feedback(payload: dict):
+def feedback(payload: dict = Body(...)):  # ← force body, not query
     try:
-        if "text" not in payload or not payload["text"]:
+        if not payload.get("text"):
             raise HTTPException(status_code=400, detail="'text' is required")
 
         doc_id = payload.get("id") or str(uuid.uuid4())
@@ -103,7 +87,6 @@ def feedback(payload: dict):
 
         upsert_case = _get_upsert_case_fn()
         upsert_case(doc_id, text, meta)
-
         return {"ok": True, "id": doc_id}
     except HTTPException:
         raise
