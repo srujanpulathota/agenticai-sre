@@ -5,7 +5,7 @@ import httpx
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 from schemas import TriageDecision
 
 # ----------------- Config from environment -----------------
