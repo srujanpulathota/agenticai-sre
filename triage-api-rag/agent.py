@@ -15,7 +15,7 @@ BACKEND = os.getenv("RAG_BACKEND", "chroma").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE = os.getenv("OPENAI_BASE")  # leave unset for official OpenAI
 OPENAI_ORG_ID = os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION")
-OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")  # needed for sk-proj-* keys
+# IMPORTANT: do not use OPENAI_PROJECT here (causes create(project=...) issues)
 
 # ----------------- RAG backend selector -----------------
 if BACKEND == "pgvector":
@@ -28,8 +28,7 @@ _LLM: Optional[ChatOpenAI] = None
 
 def _get_llm() -> ChatOpenAI:
     """
-    Build ChatOpenAI using env-provided creds. Do NOT pass a custom OpenAI client.
-    This ensures langchain-openai uses the v1 SDK correctly (no legacy .create calls).
+    Build ChatOpenAI using env-provided creds. Do NOT pass a 'project' parameter.
     """
     global _LLM
     if _LLM is not None:
@@ -44,7 +43,6 @@ def _get_llm() -> ChatOpenAI:
         api_key=OPENAI_API_KEY,
         base_url=OPENAI_BASE or None,
         organization=OPENAI_ORG_ID or None,
-        project=OPENAI_PROJECT or None,
         # keep it cheap & resilient
         max_retries=1,
         max_tokens=400,
