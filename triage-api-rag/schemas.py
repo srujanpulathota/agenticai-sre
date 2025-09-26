@@ -1,20 +1,15 @@
-# schemas.py
-from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field
+from typing import List, Dict, Any
+
+class TriageRequest(BaseModel):
+    log: Dict[str, Any]
 
 class TriageDecision(BaseModel):
-    severity: str
-    service: str
-    priority: str
-    probable_cause: str
-    runbook: str
+    severity: str = Field(..., description="ERROR/WARNING/CRITICAL etc")
+    service: str = Field(..., description="Service/component inferred")
     dedupe_key: str
-
-    # Lists default to empty so n8n never breaks on None
-    notify_channels: List[str] = Field(default_factory=list)
-    suggest_cmds: List[str] = Field(default_factory=list)
-    recommended_actions: List[str] = Field(default_factory=list)
-
-    # Nice-to-have context
-    similar_cases: List[Dict[str, Any]] = Field(default_factory=list)
-    summary: Optional[str] = None
+    probable_cause: str
+    priority: str = Field(..., description="P1..P5")
+    runbook: str
+    notify_channels: List[str] = []
+    suggest_cmds: List[str] = []
