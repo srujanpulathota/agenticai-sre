@@ -7,21 +7,34 @@ import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
 
-CHROMA_PATH = os.getenv("CHROMA_PERSIST_DIR", "/tmp/chroma")
+# ------------------------------------------------------------------------------
+# Config (override via env if needed)
+# ------------------------------------------------------------------------------
+CHROMA_PATH = os.getenv("CHROMA_PERSIST_DIR", "/tmp/chroma")  # Cloud Run-friendly
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "exceptions_kb")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_BASE = os.getenv("OPENAI_BASE")
+OPENAI_BASE = os.getenv("OPENAI_BASE")  # leave unset for official OpenAI
 OPENAI_ORG_ID = os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION")
+
+# Default OFF to silence noisy telemetry in logs; set true to re-enable
 ANON_TELEMETRY = os.getenv("ANONYMIZED_TELEMETRY", "false").lower() in ("1", "true", "yes")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set; embeddings cannot be created.")
 
+# Ensure the persistence path exists
 os.makedirs(CHROMA_PATH, exist_ok=True)
 
+# ------------------------------------------------------------------------------
+# Embedding function compatible with Chroma ≥0.4.16 (expects __call__(input=...))
+# ------------------------------------------------------------------------------
 class OpenAIEmbeddingFunctionV1:
+    """
+    Callable used by Chroma to embed texts via the OpenAI v1 SDK.
+    MUST have signature: __call__(self, input: List[str]) -> List[List[float]]
+    """
     def __init__(self, model: str, api_key: str, base_url: str | None = None, organization: str | None = None):
         self.model = model
         kwargs = {"api_key": api_key}
@@ -29,7 +42,6 @@ class OpenAIEmbeddingFunctionV1:
             kwargs["base_url"] = base_url
         if organization:
             kwargs["organization"] = organization
-        # DO NOT pass 'project' here
         self.client = OpenAI(**kwargs)
 
     def __call__(self, input: List[str]) -> List[List[float]]:
@@ -38,6 +50,9 @@ class OpenAIEmbeddingFunctionV1:
         resp = self.client.embeddings.create(model=self.model, input=input)
         return [d.embedding for d in resp.data]
 
+# ------------------------------------------------------------------------------
+# Chroma client & collection
+# ------------------------------------------------------------------------------
 client = chromadb.PersistentClient(
     path=CHROMA_PATH,
     settings=Settings(anonymized_telemetry=ANON_TELEMETRY),
@@ -55,7 +70,13 @@ collection = client.get_or_create_collection(
     embedding_function=emb_fn,
 )
 
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
 def _coerce_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Chroma metadata must be primitives (str/int/float/bool). Coerce lists/dicts to strings.
+    """
     out: Dict[str, Any] = {}
     for k, v in meta.items():
         if isinstance(v, (str, int, float, bool)) or v is None:
@@ -71,6 +92,9 @@ def _coerce_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
             out[k] = str(v)
     return out
 
+# ------------------------------------------------------------------------------
+# Public API used by agent.py
+# ------------------------------------------------------------------------------
 def upsert_case(doc_id: str, text: str, metadata: Dict[str, Any]) -> None:
     safe_meta = _coerce_metadata(metadata)
     collection.upsert(ids=[doc_id], documents=[text], metadatas=[safe_meta])
