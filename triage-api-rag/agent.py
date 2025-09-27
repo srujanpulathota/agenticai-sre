@@ -24,6 +24,18 @@ DEFAULT_PROJECT = os.getenv("DEFAULT_PROJECT", "my-gcp-project")
 DEFAULT_REGION = os.getenv("DEFAULT_REGION", "us-central1")
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", "you@gmail.com")
 
+
+# after you set/validate decision.runbook
+from urllib.parse import urlparse
+
+def _strip_slash(u: str) -> str:
+    return (u or "").rstrip("/")
+
+if _strip_slash(decision.runbook) == _strip_slash(RUNBOOK_BASE):
+    # pick a specific page based on probable cause / service / text
+    decision.runbook = _pick_runbook_from_text(decision.probable_cause or "", service, query_text)
+
+
 # ----------------- RAG backend selector -----------------
 if BACKEND == "pgvector":
     from rag_store_pg import retrieve_similar  # type: ignore
