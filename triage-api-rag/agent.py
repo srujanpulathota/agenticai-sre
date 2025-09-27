@@ -33,6 +33,7 @@ else:
 # ----------------- Lazy LLM init -----------------
 _LLM: Optional[ChatOpenAI] = None
 def _get_llm() -> ChatOpenAI:
+    """Build ChatOpenAI using env-provided creds. Do NOT pass a 'project' parameter."""
     global _LLM
     if _LLM is not None:
         return _LLM
@@ -45,7 +46,7 @@ def _get_llm() -> ChatOpenAI:
         base_url=OPENAI_BASE or None,
         organization=OPENAI_ORG_ID or None,
         max_retries=1,
-        max_tokens=500,
+        max_tokens=500,  # allow room for cmds + url
     )
     return _LLM
 
@@ -121,6 +122,7 @@ def _pick_runbook_from_text(probable: str, service: str, full_text: str) -> str:
     return urljoin(RUNBOOK_BASE + "/", "triage-general")
 
 def _logs_deeplink(project_id: str, service: str, needle: str, minutes: int = 60) -> str:
+    """Build a Google Cloud Log Explorer deep link."""
     base = "https://console.cloud.google.com/logs/query"
     query = (
         'resource.type="cloud_run_revision"\n'
@@ -144,15 +146,32 @@ def _gen_cmds(service: str, probable: str, resource_type: Optional[str]) -> List
         cmds.append("gcloud sql instances describe <INSTANCE> --format=json")
     return cmds[:5]
 
-def _coerce_list(x: Any) -> List[str]:
-    if isinstance(x, list):
-        return [str(i) for i in x]
-    if isinstance(x, str) and x.strip():
-        try:
-            j = json.loads(x)
-            return [str(i) for i in j] if isinstance(j, list) else [x]
-        except Exception:
-            return [x]
+def _ensure_str_list(val: Any) -> List[str]:
+    """
+    Coerce val into a clean list[str]. Handles:
+      - list -> trimmed list
+      - JSON array string -> list
+      - CSV/newlines/semicolon strings -> list (commas inside quotes preserved)
+      - empty/other -> []
+    """
+    if isinstance(val, list):
+        return [str(x).strip() for x in val if str(x).strip()]
+
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return []
+        if s.startswith('[') and s.endswith(']'):
+            try:
+                j = json.loads(s)
+                if isinstance(j, list):
+                    return [str(x).strip() for x in j if str(x).strip()]
+            except Exception:
+                pass
+        # split by newline/semicolon/commas not inside quotes
+        parts = re.split(r'(?:\r?\n|;|,(?=(?:[^\'"]|\'[^\']*\'|"[^"]*")*$))', s)
+        return [p.strip() for p in parts if p and p.strip()]
+
     return []
 
 def _strip_slash(u: Optional[str]) -> str:
@@ -200,7 +219,7 @@ def triage(log: Dict[str, Any]) -> TriageDecision:
         decision.dedupe_key = _stable_key(log)
 
     # ensure notify_channels (default to email channel for the demo)
-    nc = _coerce_list(decision.notify_channels)
+    nc = _ensure_str_list(decision.notify_channels)
     if not nc:
         nc = [f"email:{ALERT_EMAIL}"]
     decision.notify_channels = nc
@@ -230,16 +249,13 @@ def triage(log: Dict[str, Any]) -> TriageDecision:
     if _strip_slash(decision.runbook) == _strip_slash(RUNBOOK_BASE):
         decision.runbook = _pick_runbook_from_text(decision.probable_cause or "", service, query_text)
 
-    # ensure suggest_cmds exist (2–5)
-    cmds = _coerce_list(decision.suggest_cmds)
+    # ensure suggest_cmds exist (2–5) and are arrays
+    cmds = _ensure_str_list(decision.suggest_cmds)
     if len(cmds) < 2:
         resource_type = (log.get("resource") or {}).get("type")
         cmds = _gen_cmds(service, decision.probable_cause or "", resource_type)
-    if (decision.priority or "").upper() == "P1":
-        # optionally append one controlled restart as last step (left disabled)
-        pass
     if len(cmds) < 2:
-        cmds = cmds + ["echo 'inspect further'"]
+        cmds.append("echo 'inspect further'")
     decision.suggest_cmds = cmds[:5]
 
     return decision
