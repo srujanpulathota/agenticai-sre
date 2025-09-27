@@ -24,18 +24,6 @@ DEFAULT_PROJECT = os.getenv("DEFAULT_PROJECT", "my-gcp-project")
 DEFAULT_REGION = os.getenv("DEFAULT_REGION", "us-central1")
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", "you@gmail.com")
 
-
-# after you set/validate decision.runbook
-from urllib.parse import urlparse
-
-def _strip_slash(u: str) -> str:
-    return (u or "").rstrip("/")
-
-if _strip_slash(decision.runbook) == _strip_slash(RUNBOOK_BASE):
-    # pick a specific page based on probable cause / service / text
-    decision.runbook = _pick_runbook_from_text(decision.probable_cause or "", service, query_text)
-
-
 # ----------------- RAG backend selector -----------------
 if BACKEND == "pgvector":
     from rag_store_pg import retrieve_similar  # type: ignore
@@ -44,19 +32,12 @@ else:
 
 # ----------------- Lazy LLM init -----------------
 _LLM: Optional[ChatOpenAI] = None
-
-
 def _get_llm() -> ChatOpenAI:
-    """
-    Build ChatOpenAI using env-provided creds. Do NOT pass a 'project' parameter.
-    """
     global _LLM
     if _LLM is not None:
         return _LLM
-
     if not OPENAI_API_KEY:
         raise ValueError("Please provide an OpenAI API key via env var OPENAI_API_KEY.")
-
     _LLM = ChatOpenAI(
         model=MODEL,
         temperature=0,
@@ -64,14 +45,12 @@ def _get_llm() -> ChatOpenAI:
         base_url=OPENAI_BASE or None,
         organization=OPENAI_ORG_ID or None,
         max_retries=1,
-        max_tokens=500,  # allow room for cmds + url
+        max_tokens=500,
     )
     return _LLM
 
-
 # ----------------- Prompt & parser -----------------
 _parser = PydanticOutputParser(pydantic_object=TriageDecision)
-
 _prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -115,7 +94,6 @@ def _stable_key(log: Dict[str, Any]) -> str:
     )
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
-
 def _looks_like_url(s: Optional[str]) -> bool:
     try:
         u = urlparse(s or "")
@@ -123,8 +101,6 @@ def _looks_like_url(s: Optional[str]) -> bool:
     except Exception:
         return False
 
-
-# map keywords to runbook slugs
 RUNBOOK_MAP = {
     "502": "502s",
     "upstream": "upstream-failure",
@@ -137,7 +113,6 @@ RUNBOOK_MAP = {
     "memory": "oom",
 }
 
-
 def _pick_runbook_from_text(probable: str, service: str, full_text: str) -> str:
     hay = f"{probable} {service} {full_text}".lower()
     for key, slug in RUNBOOK_MAP.items():
@@ -145,46 +120,29 @@ def _pick_runbook_from_text(probable: str, service: str, full_text: str) -> str:
             return urljoin(RUNBOOK_BASE + "/", slug)
     return urljoin(RUNBOOK_BASE + "/", "triage-general")
 
-
 def _logs_deeplink(project_id: str, service: str, needle: str, minutes: int = 60) -> str:
-    """
-    Build a Google Cloud Log Explorer deep link for the last N minutes that
-    filters to this Cloud Run service and a key phrase.
-    """
     base = "https://console.cloud.google.com/logs/query"
     query = (
         'resource.type="cloud_run_revision"\n'
         f'resource.labels.service_name="{service}"\n'
         f'textPayload:"{needle[:80]}"'
     )
-    # The modern log explorer uses parameters in the URL path after semicolons.
-    # We'll keep it simple.
-    params = [
-        f"query={quote(query)}",
-        f"timeRange=PT{int(minutes)}M",
-        f"project={project_id}",
-    ]
+    params = [f"query={quote(query)}", f"timeRange=PT{int(minutes)}M", f"project={project_id}"]
     return f"{base};{';'.join(params)}"
-
 
 def _gen_cmds(service: str, probable: str, resource_type: Optional[str]) -> List[str]:
     svc = service or "app"
     cmds: List[str] = [
-        # read-only inspection commands
-        (
-            "gcloud logging read "
-            f"'resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"{svc}\" "
-            "AND severity>=\"ERROR\"' --limit=50 --format=json"
-        ),
+        ("gcloud logging read "
+         f"'resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"{svc}\" "
+         "AND severity>=\"ERROR\"' --limit=50 --format=json"),
         f"gcloud run services describe {svc} --region {DEFAULT_REGION} --project {DEFAULT_PROJECT}",
         "curl -s -o /dev/null -w '%{http_code}\\n' https://<YOUR_SERVICE_URL>",
     ]
     if re.search(r"(db|postgres|connection|pool|timeout)", (probable or ""), re.I):
         cmds.append("gcloud sql instances list --format='value(name,state)'")
         cmds.append("gcloud sql instances describe <INSTANCE> --format=json")
-    # cap to 5
     return cmds[:5]
-
 
 def _coerce_list(x: Any) -> List[str]:
     if isinstance(x, list):
@@ -197,6 +155,8 @@ def _coerce_list(x: Any) -> List[str]:
             return [x]
     return []
 
+def _strip_slash(u: Optional[str]) -> str:
+    return (u or "").rstrip("/")
 
 # ----------------- Public API -----------------
 def triage(log: Dict[str, Any]) -> TriageDecision:
@@ -252,34 +212,32 @@ def triage(log: Dict[str, Any]) -> TriageDecision:
             meta = c.get("meta") if isinstance(c, dict) else None
             u = (meta or {}).get("url") if isinstance(meta, dict) else None
             if _looks_like_url(u):
-                sim_urls.append(u)  # keep order
+                sim_urls.append(u)
     except Exception:
         pass
 
     # ensure runbook is a URL
     rb = decision.runbook
     if not _looks_like_url(rb):
-        # try a URL from similar cases first
         chosen = next((u for u in sim_urls if _looks_like_url(u)), None)
         if not chosen:
-            # map by keywords under RUNBOOK_BASE
             chosen = _pick_runbook_from_text(decision.probable_cause or "", service, query_text)
             if not _looks_like_url(chosen):
-                # last resort: logs explorer deep link for this service
                 chosen = _logs_deeplink(DEFAULT_PROJECT, service, decision.probable_cause or "error")
         decision.runbook = chosen
+
+    # if the model gave only the RUNBOOK_BASE root, pick a specific page
+    if _strip_slash(decision.runbook) == _strip_slash(RUNBOOK_BASE):
+        decision.runbook = _pick_runbook_from_text(decision.probable_cause or "", service, query_text)
 
     # ensure suggest_cmds exist (2–5)
     cmds = _coerce_list(decision.suggest_cmds)
     if len(cmds) < 2:
         resource_type = (log.get("resource") or {}).get("type")
         cmds = _gen_cmds(service, decision.probable_cause or "", resource_type)
-    # If P1 and we want to allow ONE controlled restart as last step, append it here.
     if (decision.priority or "").upper() == "P1":
-        # keep it optional and safe—comment out if you never want restarts auto-suggested
-        # cmds.append(f"gcloud run services update {service} --region {DEFAULT_REGION} --revision-suffix=rollout-$(date +%s)")
+        # optionally append one controlled restart as last step (left disabled)
         pass
-    # cap 2–5
     if len(cmds) < 2:
         cmds = cmds + ["echo 'inspect further'"]
     decision.suggest_cmds = cmds[:5]
