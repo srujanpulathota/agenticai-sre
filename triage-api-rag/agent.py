@@ -19,8 +19,7 @@ OPENAI_BASE = os.getenv("OPENAI_BASE")  # leave unset for official OpenAI
 OPENAI_ORG_ID = os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION")
 
 # Agent fallbacks / deep links
-RUNBOOK_BASE = os.getenv("RUNBOOK_BASE", "https://srujanpulathota.github.io/runbooks
-").rstrip("/")
+RUNBOOK_BASE = os.getenv("RUNBOOK_BASE", "https://srujanpulathota.github.io/runbooks").rstrip("/")
 DEFAULT_PROJECT = os.getenv("DEFAULT_PROJECT", "my-gcp-project")
 DEFAULT_REGION = os.getenv("DEFAULT_REGION", "us-central1")
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", "you@gmail.com")
